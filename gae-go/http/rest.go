@@ -69,6 +69,11 @@ func ResourceHandler(Resource Resource) http.HandlerFunc {
 	}
 }
 
+// Fail means API Finished unsuccessfully
+func Fail(code int, message string) Status {
+	return Status{success: false, code: code, message: message}
+}
+
 // FailSimple means API Finished unsuccessfully
 func FailSimple(code int) Status {
 	return Status{success: false, code: code, message: strconv.Itoa(code) + " " + http.StatusText(code)}
