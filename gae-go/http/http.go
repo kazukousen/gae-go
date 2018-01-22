@@ -1,7 +1,10 @@
 package http
 
 import (
-	"fmt"
+	"compress/gzip"
+	"compress/zlib"
+	"io"
+	"log"
 	"net/http"
 	"time"
 
@@ -14,19 +17,59 @@ func Chain(f func(w http.ResponseWriter, r *http.Request)) http.Handler {
 	return chain(true, f)
 }
 
-func chain(log bool, f func(w http.ResponseWriter, r *http.Request)) http.Handler {
-	return alice.New(timeout).Then(http.HandlerFunc(custom(log, f)))
+func chain(logging bool, f func(w http.ResponseWriter, r *http.Request)) http.Handler {
+	return alice.New(timeout).Then(http.HandlerFunc(custom(logging, f)))
 }
 
-func custom(log bool, f func(w http.ResponseWriter, r *http.Request)) func(w http.ResponseWriter, r *http.Request) {
+type customWriter struct {
+	io.Writer
+	http.ResponseWriter
+	status int
+}
+
+func (r *customWriter) Write(b []byte) (int, error) {
+	if r.Header().Get("Content-Type") == "" {
+		r.Header().Set("Content-Type", http.DetectContentType(b))
+	}
+	return r.Writer.Write(b)
+}
+
+func (r *customWriter) WriteHeader(status int) {
+	r.ResponseWriter.WriteHeader(status)
+	r.status = status
+}
+
+func custom(logging bool, f func(w http.ResponseWriter, r *http.Request)) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		addr := r.RemoteAddr
 		if ip, found := header(r, "X-Forwarded-For"); found {
 			addr = ip
 		}
-		f(w, r)
-		if log {
-			fmt.Printf("%s, %s, %s", addr, r.Method, r.URL)
+
+		// compress
+		ioWriter := w.(io.Writer)
+		for _, val := range misc.Split(r.Header.Get("Accept-Encoding"), ",", -1) {
+			if val == "gzip" {
+				w.Header().Set("Content-Type", "gzip")
+				g := gzip.NewWriter(w)
+				defer g.Close()
+				ioWriter = g
+				break
+			}
+			if val == "deflate" {
+				w.Header().Set("Content-Type", "deflate")
+				z := zlib.NewWriter(w)
+				defer z.Close()
+				ioWriter = z
+				break
+			}
+		}
+
+		writer := &customWriter{Writer: ioWriter, ResponseWriter: w, status: http.StatusOK}
+
+		f(writer, r)
+		if logging {
+			log.Printf("%s, %s, %s", addr, r.Method, r.URL)
 		}
 	}
 }
